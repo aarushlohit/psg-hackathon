@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -25,11 +26,19 @@ logger = logging.getLogger("clara.connections")
 
 def build_app() -> FastAPI:
     """Build and return the FastAPI application."""
-    app = FastAPI(title="CLARA Server", version="2.0.0")
     db = ClaraDB()
     db.connect()
     hub = ClaraHub(db)
-    hub.start()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup — event loop is running here
+        hub.start()
+        yield
+        # Shutdown
+        hub.stop()
+
+    app = FastAPI(title="CLARA Server", version="2.0.0", lifespan=lifespan)
 
     @app.get("/status")
     async def status():
@@ -59,10 +68,6 @@ def build_app() -> FastAPI:
             logger.exception("WebSocket error: %s", exc)
         finally:
             await hub.on_disconnect(client)
-
-    @app.on_event("shutdown")
-    async def shutdown():
-        hub.stop()
 
     # Store hub on app for test access
     app.state.hub = hub
