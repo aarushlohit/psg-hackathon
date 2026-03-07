@@ -1,0 +1,4 @@
+[console_scripts]
+clara = devhub.modules.clara.cli:app
+clara-server = devhub.modules.clara.server.app:run_server
+devhub = devhub.main:app

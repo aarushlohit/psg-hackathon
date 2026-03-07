@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: devhub
+Version: 0.1.0
+Summary: DevHub — Terminal Developer Worksuite
+Author: Aarush
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: typer>=0.9
+Requires-Dist: rich>=13.0
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn[standard]>=0.27
+Requires-Dist: websockets>=12.0
+Requires-Dist: aiohttp>=3.9
+Requires-Dist: wsproto>=1.3
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: ruff>=0.1; extra == "dev"
+Provides-Extra: security
+Requires-Dist: bandit>=1.7; extra == "security"
+Requires-Dist: pip-audit>=2.6; extra == "security"
+Provides-Extra: voice
+Requires-Dist: aiortc>=1.6; extra == "voice"
