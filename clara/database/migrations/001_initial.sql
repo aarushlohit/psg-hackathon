@@ -1,0 +1,3 @@
+-- CLARA database migrations placeholder.
+-- SQLite schema is auto-created by db.py on first connect.
+-- For PostgreSQL production deployments, place Alembic or raw SQL migrations here.

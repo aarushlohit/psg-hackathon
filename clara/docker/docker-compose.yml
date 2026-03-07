@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  clara-server:
+    build:
+      context: ../..
+      dockerfile: clara/docker/Dockerfile
+    ports:
+      - "9100:9100"
+    environment:
+      - CLARA_HOST=0.0.0.0
+      - CLARA_PORT=9100
+      - CLARA_DATABASE_URL=sqlite:///home/clara/.clara/clara.db
+      - CLARA_JWT_SECRET=${CLARA_JWT_SECRET:-change-me-in-production}
+      - CLARA_REDIS_ENABLED=false
+    volumes:
+      - clara-data:/home/clara/.clara
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/status')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: clara
+      POSTGRES_USER: clara
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clara_dev_pass}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  clara-data:
+  pg-data:
