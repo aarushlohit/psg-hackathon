@@ -43,8 +43,15 @@ class ClaraWSClient:
     # ── connection ──
 
     async def connect(self) -> None:
+        if self._connected:
+            return  # Already connected — no-op to prevent session leak
         self._session = aiohttp.ClientSession()
-        self._ws = await self._session.ws_connect(self.ws_url)
+        try:
+            self._ws = await self._session.ws_connect(self.ws_url)
+        except Exception:
+            await self._session.close()
+            self._session = None
+            raise
         self._connected = True
         logger.info("Connected to CLARA server at %s", self.ws_url)
 
@@ -89,18 +96,42 @@ class ClaraWSClient:
 
     # ── listener ──
 
-    def start_listener(self, callback: Callable[[Packet], None]) -> None:
+    def start_listener(
+        self,
+        callback: Callable[[Packet], None],
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Schedule the listener and heartbeat tasks on *loop*.
+
+        Must be called before ``loop.run_forever()`` so the tasks are queued
+        and start running as soon as the loop begins.
+        """
         self._on_packet = callback
-        loop = asyncio.get_event_loop()
         self._listener_task = loop.create_task(self._listen())
+        loop.create_task(self._heartbeat())
 
     async def _listen(self) -> None:
-        while self._connected and self._ws:
-            pkt = await self.recv_packet()
-            if pkt is None:
-                break
-            if self._on_packet:
-                self._on_packet(pkt)
+        try:
+            while self._connected and self._ws:
+                pkt = await self.recv_packet()
+                if pkt is None:
+                    break
+                if self._on_packet:
+                    self._on_packet(pkt)
+        finally:
+            # Guarantee consistent state if the loop exits for any reason
+            self._connected = False
+
+    async def _heartbeat(self, interval: int = 20) -> None:
+        """Send periodic WebSocket pings to prevent server-side timeouts."""
+        while self._connected and self._ws and not self._ws.closed:
+            await asyncio.sleep(interval)
+            if self._connected and self._ws and not self._ws.closed:
+                try:
+                    await self._ws.ping()
+                except Exception:
+                    self._connected = False
+                    break
 
     # ── auth convenience ──
 

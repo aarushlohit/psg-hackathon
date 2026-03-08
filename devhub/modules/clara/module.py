@@ -282,6 +282,14 @@ class ClaraModule(BaseModule):
         password = parts[2] if len(parts) > 2 else ""
         port = self._config.clara_port
 
+        # Guard: prevent double-connect which would leak the old session
+        if self._client and self._client.connected:
+            console.print(
+                f"[yellow]Already connected as [bold]{self._client.username}[/bold]. "
+                "Run [bold]disconnect[/bold] first.[/yellow]"
+            )
+            return
+
         if not password:
             try:
                 password = console.input("[dim]Password: [/dim]", password=True)
@@ -291,42 +299,81 @@ class ClaraModule(BaseModule):
         self._loop = asyncio.new_event_loop()
         self._client = ClaraWSClient(host, port)
 
-        def _connect_and_listen():
+        # Signal auth completion to the main thread
+        auth_event = threading.Event()
+        auth_result: dict = {"ok": False, "error": ""}
+
+        def _connect_and_listen() -> None:
             asyncio.set_event_loop(self._loop)
-            self._loop.run_until_complete(self._client.connect())
-            # Try login first, if fails try register
-            resp = self._loop.run_until_complete(self._client.login(username, password))
-            if resp.action == Action.AUTH_FAIL and "Invalid" in resp.content:
-                # Auto-register
-                resp = self._loop.run_until_complete(self._client.register(username, password))
-            if resp.action == Action.AUTH_OK:
-                self._client.start_listener(self._on_packet)
-                self._loop.run_forever()
-            else:
-                console.print(f"[red]✗ Auth failed:[/red] {resp.content}")
+            try:
+                # Step 1: open WebSocket
+                self._loop.run_until_complete(self._client.connect())
+
+                # Step 2: try login; if it fails for any reason, auto-register
+                resp = self._loop.run_until_complete(self._client.login(username, password))
+                if resp.action != Action.AUTH_OK:
+                    resp = self._loop.run_until_complete(
+                        self._client.register(username, password)
+                    )
+
+                if resp.action == Action.AUTH_OK:
+                    auth_result["ok"] = True
+                    auth_event.set()  # Unblock main thread before run_forever
+                    # Schedule listener + heartbeat then keep loop alive
+                    self._client.start_listener(self._on_packet, self._loop)
+                    self._loop.run_forever()
+                else:
+                    auth_result["error"] = resp.content or "Authentication failed"
+                    self._loop.run_until_complete(self._client.close())
+                    auth_event.set()
+            except Exception as exc:
+                logger.exception("CLARA connect error")
+                auth_result["error"] = str(exc)
+                try:
+                    self._loop.run_until_complete(self._client.close())
+                except Exception:
+                    pass
+                auth_event.set()
+            finally:
+                # Loop has stopped (disconnect) or auth failed — clean up
+                if not self._loop.is_closed():
+                    self._loop.close()
 
         t = threading.Thread(target=_connect_and_listen, daemon=True)
         t.start()
-        time.sleep(1)  # Let connection establish
 
-        if self._client.connected:
+        # Block until auth resolves (up to 10 s) rather than sleeping blindly
+        if not auth_event.wait(timeout=10):
+            console.print("[red]✗ Connection timed out.[/red]")
+            self._client = None
+            self._loop = None
+            return
+
+        if auth_result["ok"]:
             console.print(
                 f"[green]✓[/green] Connected as [bold]{username}[/bold] to {host}:{port}"
                 f"  [dim](role: {self._client.role})[/dim]"
             )
         else:
-            console.print("[red]✗ Connection failed.[/red]")
-
-    def _handle_disconnect(self) -> None:
-        if self._client and self._client.connected:
-            if self._loop and self._loop.is_running():
-                asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
-                self._loop.call_soon_threadsafe(self._loop.stop)
+            console.print(f"[red]✗ Connection failed:[/red] {auth_result['error']}")
             self._client = None
             self._loop = None
-            console.print("[green]✓[/green] Disconnected.")
-        else:
+
+    def _handle_disconnect(self) -> None:
+        if not self._client or not self._client.connected:
             console.print("[yellow]Not connected.[/yellow]")
+            return
+        if self._loop and self._loop.is_running():
+            # Wait for clean close before stopping the loop
+            future = asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
+            try:
+                future.result(timeout=5)
+            except Exception:
+                pass
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        self._client = None
+        self._loop = None
+        console.print("[green]\u2713[/green] Disconnected.")
 
     def _cmd_whoami(self) -> None:
         if not self._ensure_connected():
