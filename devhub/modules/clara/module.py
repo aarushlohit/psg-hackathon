@@ -258,10 +258,14 @@ class ClaraModule(BaseModule):
 
     def _run(self, coro):
         """Run an async coroutine from sync context."""
-        if self._loop and self._loop.is_running():
+        if self._loop and not self._loop.is_closed() and self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             return future.result(timeout=30)
-        return asyncio.get_event_loop().run_until_complete(coro)
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     # ──────────── server management ────────────
 
@@ -368,11 +372,9 @@ class ClaraModule(BaseModule):
             )
             return
 
-        # Tear down any previous client that is dead/reconnecting but not yet cleaned up.
-        # This stops orphaned reconnect loops from continuing in the background.
+        # Tear down any previous client that is dead but not yet cleaned up.
         if self._client is not None:
-            self._client._shutdown = True   # stops _reconnect_loop immediately
-            if self._loop and self._loop.is_running():
+            if self._loop and not self._loop.is_closed() and self._loop.is_running():
                 try:
                     asyncio.run_coroutine_threadsafe(
                         self._client.close(), self._loop
@@ -412,8 +414,6 @@ class ClaraModule(BaseModule):
                 if resp.action == Action.AUTH_OK:
                     auth_result["ok"] = True
                     auth_event.set()  # Unblock main thread before run_forever
-                    # Stabilise the WS before the listener starts reading
-                    self._loop.run_until_complete(asyncio.sleep(0.5))
                     self._client.start_listener(self._on_packet, self._loop)
                     self._loop.run_forever()
                 else:
@@ -430,7 +430,7 @@ class ClaraModule(BaseModule):
                 auth_event.set()
             finally:
                 # Loop has stopped (disconnect) or auth failed — clean up
-                if not self._loop.is_closed():
+                if self._loop and not self._loop.is_closed():
                     self._loop.close()
 
         t = threading.Thread(target=_connect_and_listen, daemon=True)
@@ -457,8 +457,7 @@ class ClaraModule(BaseModule):
         if not self._client:
             console.print("[yellow]Not connected.[/yellow]")
             return
-        if self._loop and self._loop.is_running():
-            self._client._shutdown = True   # stop any reconnect loop first
+        if self._loop and not self._loop.is_closed() and self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
             try:
                 future.result(timeout=5)
@@ -661,26 +660,44 @@ class ClaraModule(BaseModule):
     # ──────────── AI ────────────
 
     def _cmd_ai(self, args: str) -> None:
-        if not self._ensure_connected():
-            return
         parts = args.strip().split(maxsplit=1)
         sub = parts[0].lower() if parts else ""
         aarg = parts[1].strip() if len(parts) > 1 else ""
 
         match sub:
-            case "enable":
-                provider = aarg or "openai"
-                asyncio.run_coroutine_threadsafe(self._client.ai_enable(provider), self._loop)
             case "ask":
                 if not aarg:
                     console.print("[yellow]Usage: ai ask <question>[/yellow]")
                     return
-                asyncio.run_coroutine_threadsafe(self._client.ai_ask(aarg), self._loop)
+                # Use local Pollinations AI — works without server connection
+                from devhub.modules.clara.ai import ask_ai
+                console.print(f"  [dim]Asking AI…[/dim]")
+                try:
+                    answer = ask_ai(aarg)
+                    console.print(Panel(
+                        answer,
+                        title="[bold cyan]Pollinations AI[/bold cyan]",
+                        border_style="blue",
+                        padding=(1, 2),
+                    ))
+                except Exception as exc:
+                    console.print(f"[red]✗ AI error:[/red] {exc}")
+            case "enable":
+                if not self._ensure_connected():
+                    return
+                provider = aarg or "openai"
+                asyncio.run_coroutine_threadsafe(self._client.ai_enable(provider), self._loop)
             case "summarize":
+                if not self._ensure_connected():
+                    return
                 asyncio.run_coroutine_threadsafe(self._client.ai_summarize(), self._loop)
             case "usage":
+                if not self._ensure_connected():
+                    return
                 asyncio.run_coroutine_threadsafe(self._client.ai_usage(), self._loop)
             case "budget":
+                if not self._ensure_connected():
+                    return
                 try:
                     amount = float(aarg.replace("$", ""))
                 except ValueError:
@@ -688,6 +705,8 @@ class ClaraModule(BaseModule):
                     return
                 asyncio.run_coroutine_threadsafe(self._client.ai_budget(amount), self._loop)
             case "limit":
+                if not self._ensure_connected():
+                    return
                 try:
                     limit = int(aarg)
                 except ValueError:
@@ -695,7 +714,7 @@ class ClaraModule(BaseModule):
                     return
                 asyncio.run_coroutine_threadsafe(self._client.ai_limit(limit), self._loop)
             case _:
-                console.print("[yellow]Usage: ai enable|ask|summarize|usage|budget|limit[/yellow]")
+                console.print("[yellow]Usage: ai ask|enable|summarize|usage|budget|limit[/yellow]")
 
     # ──────────── moderation ────────────
 

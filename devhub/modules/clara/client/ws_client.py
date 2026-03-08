@@ -31,11 +31,6 @@ class ClaraWSClient:
         self._listener_task: Optional[asyncio.Task] = None
         self._on_packet: Optional[Callable[[Packet], None]] = None
         self._connected = False
-        # reconnect state
-        self._password: str = ""
-        self._shutdown: bool = False
-        self._reconnecting: bool = False
-        self._max_retries: int = 3   # 3 attempts: 2 s, 4 s, 8 s  (~14 s total)
         self._heartbeat_task: Optional[asyncio.Task] = None
 
     @property
@@ -51,7 +46,6 @@ class ClaraWSClient:
     async def connect(self) -> None:
         if self._connected:
             return  # Already connected — no-op to prevent session leak
-        self._shutdown = False  # fresh connect clears any prior shutdown
         await self._close_transport()  # clean up any stale socket
         self._session = aiohttp.ClientSession()
         try:
@@ -64,7 +58,6 @@ class ClaraWSClient:
         logger.info("Connected to CLARA server at %s", self.ws_url)
 
     async def close(self) -> None:
-        self._shutdown = True  # prevent auto-reconnect on intentional close
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
@@ -143,135 +136,23 @@ class ClaraWSClient:
         self._heartbeat_task = loop.create_task(self._heartbeat())
 
     async def _listen(self) -> None:
-        """Persistent receive loop — auto-reconnects when the connection drops."""
-        _rapid_failures = 0          # consecutive drops within grace period
-        _MAX_RAPID = 3               # give up after this many instant drops
-        _GRACE_SECS = 5.0            # must survive this long to reset counter
-
-        while True:
-            _connected_at = asyncio.get_event_loop().time()
-
-            # ── inner receive loop ──
-            try:
-                while self._connected and self._ws:
-                    pkt = await self.recv_packet()
-                    if pkt is None:
-                        break
-                    if self._on_packet:
-                        self._on_packet(pkt)
-            except asyncio.CancelledError:
-                self._connected = False
-                raise  # close() cancelled us — exit cleanly
-            finally:
-                self._connected = False
-
-            # ── reconnect? ──
-            # Only reconnect if we have stored credentials and weren't shut down
-            if self._shutdown or not self.username or not self._password:
-                break
-
-            # Detect rapid connect-then-drop cycles
-            alive = asyncio.get_event_loop().time() - _connected_at
-            if alive < _GRACE_SECS:
-                _rapid_failures += 1
-            else:
-                _rapid_failures = 0
-
-            if _rapid_failures >= _MAX_RAPID:
-                if self._on_packet:
-                    self._on_packet(Packet(
-                        action=Action.SYSTEM,
-                        content="Connection keeps dropping immediately — giving up. "
-                                "Use [bold]connect[/bold] to retry manually.",
-                    ))
-                break
-
-            reconnected = await self._reconnect_loop()
-            if not reconnected:
-                break
-            # Reconnect succeeded — outer loop resumes listening
-
-    async def _reconnect_loop(self) -> bool:
-        """Try to reconnect with exponential back-off. Returns True on success."""
-        if self._reconnecting:
-            return False
-        self._reconnecting = True
-        delay = 2  # start at 2 s; doubles each attempt (2 → 4 → 8)
+        """Receive loop — runs until disconnect, no auto-reconnect."""
         try:
-            for attempt in range(1, self._max_retries + 1):
-                if self._shutdown:
-                    return False
-
+            while self._connected and self._ws:
+                pkt = await self.recv_packet()
+                if pkt is None:
+                    break
                 if self._on_packet:
-                    self._on_packet(Packet(
-                        action=Action.SYSTEM,
-                        content=f"Connection lost — reconnecting "
-                                f"({attempt}/{self._max_retries})…",
-                    ))
-
-                try:
-                    await self._close_transport()
-                    self._session = aiohttp.ClientSession()
-                    self._ws = await self._session.ws_connect(self.ws_url)
-                    self._connected = True
-
-                    # Re-authenticate with stored credentials
-                    resp = await self.login(self.username, self._password)
-                    if resp.action != Action.AUTH_OK:
-                        resp = await self.register(self.username, self._password)
-
-                    if resp.action == Action.AUTH_OK:
-                        # Re-join previous room if any
-                        if self.room:
-                            await self.join_room(self.room)
-                        # Stabilise the WS before restarting listener/heartbeat
-                        await asyncio.sleep(0.5)
-                        # Cancel stale heartbeat and start a fresh one
-                        if self._heartbeat_task and not self._heartbeat_task.done():
-                            self._heartbeat_task.cancel()
-                        self._heartbeat_task = asyncio.ensure_future(self._heartbeat())
-                        if self._on_packet:
-                            room_tag = f"  ·  #{self.room}" if self.room else ""
-                            self._on_packet(Packet(
-                                action=Action.SYSTEM,
-                                content=f"Reconnected as {self.username}{room_tag}",
-                            ))
-                        logger.info("Reconnected to %s as %s", self.ws_url, self.username)
-                        return True
-                    else:
-                        self._connected = False
-                        await self._close_transport()
-                        raise ConnectionError(f"Re-auth failed: {resp.content}")
-
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.warning(
-                        "Reconnect attempt %d/%d failed: %s",
-                        attempt, self._max_retries, exc,
-                    )
-                    self._connected = False
-                    await self._close_transport()
-
-                    if attempt < self._max_retries and not self._shutdown:
-                        if self._on_packet:
-                            self._on_packet(Packet(
-                                action=Action.SYSTEM,
-                                content=f"Reconnect failed — retrying in {delay}s…",
-                            ))
-                        await asyncio.sleep(delay)
-                        delay = min(delay * 2, 30)  # cap at 30 s
-
-            # All retries exhausted
+                    self._on_packet(pkt)
+        except asyncio.CancelledError:
+            raise  # close() cancelled us — exit cleanly
+        finally:
+            self._connected = False
             if self._on_packet:
                 self._on_packet(Packet(
                     action=Action.SYSTEM,
-                    content=f"Could not reconnect after {self._max_retries} attempts. "
-                            "Use [bold]connect[/bold] to retry manually.",
+                    content="Connection closed. Run [bold]connect <host> <user>[/bold] again.",
                 ))
-            return False
-        finally:
-            self._reconnecting = False
 
     async def _heartbeat(self, interval: int = 20) -> None:
         """Send periodic WebSocket pings to prevent server-side timeouts."""
@@ -292,7 +173,6 @@ class ClaraWSClient:
         resp = await self.recv_packet()
         if resp and resp.action == Action.AUTH_OK:
             self.username = username
-            self._password = password  # store for auto-reconnect
             self.role = resp.data.get("role", "user")
         return resp or Packet.error("No response")
 
@@ -302,7 +182,6 @@ class ClaraWSClient:
         resp = await self.recv_packet()
         if resp and resp.action == Action.AUTH_OK:
             self.username = username
-            self._password = password  # store for auto-reconnect
             self.role = resp.data.get("role", "user")
         return resp or Packet.error("No response")
 
