@@ -36,6 +36,7 @@ class ClaraWSClient:
         self._shutdown: bool = False
         self._reconnecting: bool = False
         self._max_retries: int = 3   # 3 attempts: 2 s, 4 s, 8 s  (~14 s total)
+        self._heartbeat_task: Optional[asyncio.Task] = None
 
     @property
     def connected(self) -> bool:
@@ -64,6 +65,9 @@ class ClaraWSClient:
 
     async def close(self) -> None:
         self._shutdown = True  # prevent auto-reconnect on intentional close
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
         if self._listener_task:
             self._listener_task.cancel()
             self._listener_task = None
@@ -110,7 +114,12 @@ class ClaraWSClient:
             msg = await self._ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
                 return Packet.from_json(msg.data)
-            if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            if msg.type in (
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSING,
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.ERROR,
+            ):
                 self._connected = False
                 return None
         except Exception:
@@ -131,11 +140,17 @@ class ClaraWSClient:
         """
         self._on_packet = callback
         self._listener_task = loop.create_task(self._listen())
-        loop.create_task(self._heartbeat())
+        self._heartbeat_task = loop.create_task(self._heartbeat())
 
     async def _listen(self) -> None:
         """Persistent receive loop — auto-reconnects when the connection drops."""
+        _rapid_failures = 0          # consecutive drops within grace period
+        _MAX_RAPID = 3               # give up after this many instant drops
+        _GRACE_SECS = 5.0            # must survive this long to reset counter
+
         while True:
+            _connected_at = asyncio.get_event_loop().time()
+
             # ── inner receive loop ──
             try:
                 while self._connected and self._ws:
@@ -153,6 +168,22 @@ class ClaraWSClient:
             # ── reconnect? ──
             # Only reconnect if we have stored credentials and weren't shut down
             if self._shutdown or not self.username or not self._password:
+                break
+
+            # Detect rapid connect-then-drop cycles
+            alive = asyncio.get_event_loop().time() - _connected_at
+            if alive < _GRACE_SECS:
+                _rapid_failures += 1
+            else:
+                _rapid_failures = 0
+
+            if _rapid_failures >= _MAX_RAPID:
+                if self._on_packet:
+                    self._on_packet(Packet(
+                        action=Action.SYSTEM,
+                        content="Connection keeps dropping immediately — giving up. "
+                                "Use [bold]connect[/bold] to retry manually.",
+                    ))
                 break
 
             reconnected = await self._reconnect_loop()
@@ -193,8 +224,12 @@ class ClaraWSClient:
                         # Re-join previous room if any
                         if self.room:
                             await self.join_room(self.room)
-                        # Restart heartbeat for the fresh socket
-                        asyncio.ensure_future(self._heartbeat())
+                        # Cancel stale heartbeat and start a fresh one
+                        if self._heartbeat_task and not self._heartbeat_task.done():
+                            self._heartbeat_task.cancel()
+                        self._heartbeat_task = asyncio.ensure_future(self._heartbeat())
+                        # Brief stabilisation pause so the WS is fully ready
+                        await asyncio.sleep(0.3)
                         if self._on_packet:
                             room_tag = f"  ·  #{self.room}" if self.room else ""
                             self._on_packet(Packet(

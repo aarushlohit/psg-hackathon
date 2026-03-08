@@ -79,7 +79,11 @@ class ClaraHub:
     async def on_disconnect(self, client: ConnectedClient) -> None:
         if not client.username:
             return
-        if client.room:
+        # Only clean up if this client is still the active session for the user.
+        # A reconnect may have already replaced the entry with a new client;
+        # tearing down the old session must not sabotage the new one.
+        is_current = self.clients.get(client.username) is client
+        if client.room and is_current:
             await self._broadcast_to_room(
                 client.room,
                 Packet.system(f"{client.username} disconnected.", room=client.room),
@@ -87,8 +91,9 @@ class ClaraHub:
             )
             self.db.leave_room(client.room, client.username)
         self.voice.remove_user(client.username)
-        await self.presence.user_disconnected(client.username, self.clients)
-        self.clients.pop(client.username, None)
+        if is_current:
+            await self.presence.user_disconnected(client.username, self.clients)
+            self.clients.pop(client.username, None)
 
     # ── rate limiting ──
 
