@@ -9,8 +9,10 @@ Run standalone:  python -m clara.server.main [--host 0.0.0.0] [--port 9100]
 import argparse
 import json
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -24,8 +26,23 @@ from clara.server.websocket import ClaraHub
 logger = logging.getLogger("clara.connections")
 
 
+def _maybe_reset_db() -> None:
+    """If CLARA_RESET_DB=1 is set, delete the SQLite database before startup."""
+    if os.environ.get("CLARA_RESET_DB", "").lower() not in ("1", "true", "yes"):
+        return
+    db_path = Path(os.environ.get(
+        "CLARA_SQLITE_PATH", str(Path.home() / ".clara" / "clara.db")
+    ))
+    for p in (db_path, db_path.with_name(db_path.name + "-wal"),
+              db_path.with_name(db_path.name + "-shm")):
+        if p.exists():
+            p.unlink()
+            logger.info("CLARA_RESET_DB: deleted %s", p)
+
+
 def build_app() -> FastAPI:
     """Build and return the FastAPI application."""
+    _maybe_reset_db()
     db = ClaraDB()
     db.connect()
     hub = ClaraHub(db)

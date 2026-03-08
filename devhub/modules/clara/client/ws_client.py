@@ -224,12 +224,12 @@ class ClaraWSClient:
                         # Re-join previous room if any
                         if self.room:
                             await self.join_room(self.room)
+                        # Stabilise the WS before restarting listener/heartbeat
+                        await asyncio.sleep(0.5)
                         # Cancel stale heartbeat and start a fresh one
                         if self._heartbeat_task and not self._heartbeat_task.done():
                             self._heartbeat_task.cancel()
                         self._heartbeat_task = asyncio.ensure_future(self._heartbeat())
-                        # Brief stabilisation pause so the WS is fully ready
-                        await asyncio.sleep(0.3)
                         if self._on_packet:
                             room_tag = f"  ·  #{self.room}" if self.room else ""
                             self._on_packet(Packet(

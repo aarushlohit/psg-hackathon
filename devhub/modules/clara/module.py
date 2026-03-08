@@ -84,6 +84,8 @@ class ClaraModule(BaseModule):
                 ("server start", "Start CLARA server on this machine"),
                 ("server stop", "Stop the local CLARA server"),
                 ("server status", "Check server health"),
+                ("server reset-db", "Delete database for a fresh start"),
+                ("server wipe", "Wipe DB + restart Docker containers"),
             ]),
             ("Connection", [
                 ("connect <host> <user>", "Connect and register/login"),
@@ -283,8 +285,12 @@ class ClaraModule(BaseModule):
                 console.print(f"[green]● Server running[/green] on port {self._config.clara_port}")
             else:
                 console.print("[dim]● Server not running[/dim]")
+        elif sub == "reset-db":
+            self._cmd_reset_db()
+        elif sub == "wipe":
+            self._cmd_wipe()
         else:
-            console.print("[yellow]Usage: server start | stop | status[/yellow]")
+            console.print("[yellow]Usage: server start | stop | status | reset-db | wipe[/yellow]")
 
     def _run_server_thread(self, port: int) -> None:
         from devhub.modules.clara.server.app import run_server_async
@@ -296,6 +302,52 @@ class ClaraModule(BaseModule):
             logger.error("Server error: %s", exc)
         finally:
             loop.close()
+
+    @staticmethod
+    def _db_path() -> Path:
+        """Resolve the CLARA SQLite database path."""
+        return Path(os.environ.get(
+            "CLARA_SQLITE_PATH",
+            str(Path.home() / ".clara" / "clara.db"),
+        ))
+
+    def _cmd_reset_db(self) -> None:
+        """Delete the CLARA database so the next server start is fresh."""
+        db = self._db_path()
+        if db.exists():
+            db.unlink()
+            console.print(f"[green]✓[/green] Deleted {db}")
+        else:
+            console.print(f"[dim]No database at {db}[/dim]")
+        # Also remove WAL/SHM journal files
+        for suffix in ("-wal", "-shm"):
+            p = db.with_name(db.name + suffix)
+            if p.exists():
+                p.unlink()
+
+    def _cmd_wipe(self) -> None:
+        """Wipe database, data dir, and restart Docker containers."""
+        import subprocess
+        # 1 — delete local DB
+        self._cmd_reset_db()
+        # 2 — nuke the Docker volume so the container DB is also fresh
+        compose = Path(__file__).resolve().parents[2] / "docker" / "docker-compose.yml"
+        if not compose.exists():
+            # fallback: look relative to project root
+            compose = Path(__file__).resolve().parents[4] / "clara" / "docker" / "docker-compose.yml"
+        if compose.exists():
+            console.print("[dim]Restarting containers…[/dim]")
+            subprocess.run(
+                ["docker", "compose", "-f", str(compose), "down", "-v"],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["docker", "compose", "-f", str(compose), "up", "-d"],
+                capture_output=True,
+            )
+            console.print("[green]✓[/green] Containers restarted with clean volume")
+        else:
+            console.print("[yellow]docker-compose.yml not found — skipping container restart[/yellow]")
 
     # ──────────── connection ────────────
 
@@ -360,7 +412,8 @@ class ClaraModule(BaseModule):
                 if resp.action == Action.AUTH_OK:
                     auth_result["ok"] = True
                     auth_event.set()  # Unblock main thread before run_forever
-                    # Schedule listener + heartbeat then keep loop alive
+                    # Stabilise the WS before the listener starts reading
+                    self._loop.run_until_complete(asyncio.sleep(0.5))
                     self._client.start_listener(self._on_packet, self._loop)
                     self._loop.run_forever()
                 else:
