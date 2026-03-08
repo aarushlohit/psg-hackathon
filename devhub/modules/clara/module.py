@@ -308,13 +308,28 @@ class ClaraModule(BaseModule):
         password = parts[2] if len(parts) > 2 else ""
         port = self._config.clara_port
 
-        # Guard: prevent double-connect which would leak the old session
+        # Guard: block if already live-connected
         if self._client and self._client.connected:
             console.print(
                 f"[yellow]Already connected as [bold]{self._client.username}[/bold]. "
                 "Run [bold]disconnect[/bold] first.[/yellow]"
             )
             return
+
+        # Tear down any previous client that is dead/reconnecting but not yet cleaned up.
+        # This stops orphaned reconnect loops from continuing in the background.
+        if self._client is not None:
+            self._client._shutdown = True   # stops _reconnect_loop immediately
+            if self._loop and self._loop.is_running():
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._client.close(), self._loop
+                    ).result(timeout=2)
+                except Exception:
+                    pass
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            self._client = None
+            self._loop = None
 
         if not password:
             try:
@@ -386,11 +401,11 @@ class ClaraModule(BaseModule):
             self._loop = None
 
     def _handle_disconnect(self) -> None:
-        if not self._client or not self._client.connected:
+        if not self._client:
             console.print("[yellow]Not connected.[/yellow]")
             return
         if self._loop and self._loop.is_running():
-            # Wait for clean close before stopping the loop
+            self._client._shutdown = True   # stop any reconnect loop first
             future = asyncio.run_coroutine_threadsafe(self._client.close(), self._loop)
             try:
                 future.result(timeout=5)

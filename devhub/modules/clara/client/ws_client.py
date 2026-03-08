@@ -35,7 +35,7 @@ class ClaraWSClient:
         self._password: str = ""
         self._shutdown: bool = False
         self._reconnecting: bool = False
-        self._max_retries: int = 10
+        self._max_retries: int = 3   # 3 attempts: 2 s, 4 s, 8 s  (~14 s total)
 
     @property
     def connected(self) -> bool:
@@ -165,7 +165,7 @@ class ClaraWSClient:
         if self._reconnecting:
             return False
         self._reconnecting = True
-        delay = 1
+        delay = 2  # start at 2 s; doubles each attempt (2 → 4 → 8)
         try:
             for attempt in range(1, self._max_retries + 1):
                 if self._shutdown:
