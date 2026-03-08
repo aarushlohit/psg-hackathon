@@ -147,21 +147,66 @@ def _dispatch_slash(cmd: str, arg: str, room: str) -> Packet:
     return Packet.error(f"Unknown command: /{cmd}. Try /help.")
 
 
-HELP_TEXT = """
-[bold cyan]CLARA Commands[/]
+# Each entry: (command, syntax, example, description)
+HELP_ENTRIES: list[tuple[str, str, str, str]] = [
+    # ── Connection ──────────────────────────────────────────────────────────
+    ("Connection", "/whoami",                  "/whoami",                           "Show your logged-in username"),
+    ("Connection", "/quit",                    "/quit",                             "Disconnect and exit CLARA"),
 
-[yellow]Connection:[/]  /whoami  /quit
-[yellow]Rooms:[/]       /join <room>  /leave  /create <room>  /rooms  /users  /who
-[yellow]Chat:[/]        /msg <user> <text>  /reply <id> <text>  /edit <id> <text>  /delete <id>
-                /search <query>  /history [room]
-[yellow]Voice:[/]       /call <user>  /accept <user>  /reject <user>  /hangup
-                /voicejoin [room]  /voiceleave  /mute  /unmute
-[yellow]Files:[/]       /upload <path>  /download <id>  /files
-[yellow]AI:[/]          /ai enable [provider]  /ai ask <question>  /ai summarize
-                /ai usage  /ai budget <$>  /ai limit <n>
-[yellow]Mod:[/]         /kick <user>  /ban <user>  /unban <user>
-                /muteuser <user> [min]  /unmuteuser <user>  /role <user> <role>
-[yellow]Status:[/]      /status <online|away|busy>
+    # ── Rooms ───────────────────────────────────────────────────────────────
+    ("Rooms",      "/create <room>",           "/create dev",                       "Create a new room named <room>"),
+    ("Rooms",      "/join <room>",             "/join dev",                         "Join an existing room"),
+    ("Rooms",      "/leave",                   "/leave",                            "Leave the current room"),
+    ("Rooms",      "/rooms",                   "/rooms",                            "List all available rooms"),
+    ("Rooms",      "/users",                   "/users",                            "List users in the current room"),
+    ("Rooms",      "/who",                     "/who",                              "Show all online users + their status"),
 
-Type text without / to send a chat message.
-""".strip()
+    # ── Chat ────────────────────────────────────────────────────────────────
+    ("Chat",       "<message>",               "hello everyone!",                   "Send a message to the current room (no slash needed)"),
+    ("Chat",       "/msg <user> <text>",       "/msg alice hey, are you there?",     "Send a private direct message"),
+    ("Chat",       "/reply <id> <text>",       "/reply 42 yes, I agree!",           "Reply to a specific message by ID"),
+    ("Chat",       "/edit <id> <text>",        "/edit 42 corrected message",        "Edit one of your own messages"),
+    ("Chat",       "/delete <id>",             "/delete 42",                        "Delete one of your own messages"),
+    ("Chat",       "/history [room]",          "/history dev",                      "Show recent message history for a room"),
+    ("Chat",       "/search <query>",          "/search launch codes",              "Search messages across the current room"),
+
+    # ── Voice ───────────────────────────────────────────────────────────────
+    ("Voice",      "/call <user>",             "/call alice",                       "Start a P2P voice call with a user"),
+    ("Voice",      "/accept <user>",           "/accept spider",                    "Accept an incoming call"),
+    ("Voice",      "/reject <user>",           "/reject spider",                    "Reject an incoming call"),
+    ("Voice",      "/hangup",                  "/hangup",                           "End the current active call"),
+    ("Voice",      "/voicejoin [room]",        "/voicejoin dev",                    "Join a voice room (multi-user)"),
+    ("Voice",      "/voiceleave",             "/voiceleave",                       "Leave the current voice room"),
+    ("Voice",      "/mute",                   "/mute",                             "Mute your microphone in a voice room"),
+    ("Voice",      "/unmute",                 "/unmute",                           "Unmute your microphone"),
+
+    # ── Files ───────────────────────────────────────────────────────────────
+    ("Files",      "/upload <path>",           "/upload /tmp/report.pdf",           "Upload a local file to the current room (max 50 MB)"),
+    ("Files",      "/files",                   "/files",                            "List files shared in the current room"),
+    ("Files",      "/download <id>",           "/download a3f9c2",                  "Download a shared file by its ID"),
+
+    # ── AI Gateway ──────────────────────────────────────────────────────────
+    ("AI",         "/ai enable [provider]",    "/ai enable openai",                 "Enable the AI gateway (providers: openai · claude · openrouter)"),
+    ("AI",         "/ai ask <question>",       "/ai ask what is quantum computing?", "Ask the AI a question"),
+    ("AI",         "/ai summarize",            "/ai summarize",                     "Summarise recent room messages with AI"),
+    ("AI",         "/ai usage",                "/ai usage",                         "Show your AI token + cost usage"),
+    ("AI",         "/ai budget <amount>",      "/ai budget 5.00",                   "Set your AI spend budget in USD"),
+    ("AI",         "/ai limit <n>",            "/ai limit 200",                     "Set your max token limit per request"),
+
+    # ── Moderation ──────────────────────────────────────────────────────────
+    ("Moderation", "/kick <user>",             "/kick bob",                         "Remove a user from the current room (not banned)"),
+    ("Moderation", "/ban <user>",              "/ban bob",                          "Permanently ban a user from the server"),
+    ("Moderation", "/unban <user>",            "/unban bob",                        "Lift a ban from a user"),
+    ("Moderation", "/muteuser <user> [min]",   "/muteuser alice 10",                "Silence a user in the room (optional: duration in minutes)"),
+    ("Moderation", "/unmuteuser <user>",       "/unmuteuser alice",                 "Remove a mute from a user"),
+    ("Moderation", "/role <user> <role>",      "/role alice admin",                 "Set a user's role (owner › admin › moderator › member)"),
+
+    # ── Presence / Status ────────────────────────────────────────────────────
+    ("Status",     "/status <text>",           "/status coding away",               "Set your presence status message"),
+]
+
+# Legacy flat string kept for any fallback rendering
+HELP_TEXT = "\n".join(
+    f"  {syntax:<35} {example:<40} # {desc}"
+    for _, syntax, example, desc in HELP_ENTRIES
+)

@@ -4,6 +4,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich import box
 
 from clara.server.protocol import Action, Packet
 
@@ -23,7 +24,10 @@ def render_packet(pkt: Packet) -> None:
     elif a == Action.ERROR:
         console.print(f"[bold red]✗ Error:[/] {pkt.content}")
     elif a == Action.SYSTEM:
-        console.print(f"[dim cyan]ℹ {pkt.content}[/]")
+        if pkt.content == "__HELP__":
+            _render_help()
+        else:
+            console.print(f"[dim cyan]ℹ {pkt.content}[/]")
     elif a == Action.MESSAGE:
         ts = pkt.timestamp[:19] if pkt.timestamp else ""
         reply = pkt.data.get("reply_to", "")
@@ -132,6 +136,40 @@ def _render_presence(pkt: Packet) -> None:
         user = pkt.data.get("user", pkt.sender)
         status = pkt.data.get("status", "?")
         console.print(f"[dim]{user} is now {status}[/]")
+
+
+def _render_help() -> None:
+    from clara.client.commands import HELP_ENTRIES
+    CATEGORY_COLORS = {
+        "Connection": "bright_white",
+        "Rooms":      "cyan",
+        "Chat":       "green",
+        "Voice":      "yellow",
+        "Files":      "blue",
+        "AI":         "magenta",
+        "Moderation": "red",
+        "Status":     "bright_cyan",
+    }
+    table = Table(
+        show_header=True, header_style="bold white",
+        box=box.SIMPLE_HEAVY, show_lines=False, expand=False,
+        title="[bold cyan]CLARA — Command Reference[/]",
+    )
+    table.add_column("Category",    style="dim",          width=12, no_wrap=True)
+    table.add_column("Syntax",                            width=32, no_wrap=True)
+    table.add_column("Example",     style="bold green",   width=40, no_wrap=True)
+    table.add_column("Description", style="dim white",    min_width=30)
+
+    last_cat = ""
+    for category, syntax, example, desc in HELP_ENTRIES:
+        color = CATEGORY_COLORS.get(category, "white")
+        cat_cell = f"[{color}]{category}[/]" if category != last_cat else ""
+        last_cat = category
+        table.add_row(cat_cell, f"[bold]{syntax}[/]", example, desc)
+
+    console.print()
+    console.print(table)
+    console.print("[dim]  Tip: type any text without a / to send a chat message to the current room.[/]\n")
 
 
 def show_welcome() -> None:

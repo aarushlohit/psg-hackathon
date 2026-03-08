@@ -12,8 +12,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.prompt import Prompt
 
-from clara.client.commands import HELP_TEXT, parse_command
-from clara.client.ui import console, render_packet, show_welcome
+from clara.client.commands import parse_command
+from clara.client.ui import console, render_packet, show_welcome, _render_help
 from clara.client.websocket_client import ClaraWSClient
 from clara.server.protocol import Action, Packet
 
@@ -78,9 +78,9 @@ async def _interactive(host: str, port: int) -> None:
             if pkt is None:
                 continue
 
-            # Client-side help
+            # Client-side help — rendered locally, no server round-trip
             if pkt.action == Action.SYSTEM and pkt.content == "__HELP__":
-                console.print(HELP_TEXT)
+                _render_help()
                 continue
 
             # File upload needs local processing
