@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from rich import box
 from rich.console import Console
+from rich.markup import escape
 
 from devhub.modules.base import BaseModule
 
@@ -36,9 +38,11 @@ class ModuleRouter:
         key = name.lower().strip()
         target = self._modules.get(key)
         if target is None:
-            console.print(f"[red]✗[/red] Unknown module: [bold]{name}[/bold]")
-            available = ", ".join(sorted(self._modules))
-            console.print(f"  Available modules: {available}")
+            console.print(f"  [bold red]✗[/bold red]  Unknown module: [bold]{escape(name)}[/bold]")
+            available = "  ".join(
+                f"[orange1]{m}[/orange1]" for m in sorted(self._modules)
+            )
+            console.print(f"  [dim]Modules:[/dim]  {available}")
             return False
 
         if self._current is not None:
@@ -63,13 +67,16 @@ class ModuleRouter:
     def handle_input(self, raw: str) -> None:
         """Forward command to the current module."""
         if self._current is None:
-            console.print("[yellow]No active module. Use /switch <module>[/yellow]")
+            console.print(
+                "  [yellow]No active module.[/yellow]  "
+                "[dim]Use [bold]/switch <module>[/bold] to enter one.[/dim]"
+            )
             return
         try:
             self._current.handle(raw)
         except Exception as exc:
             logger.exception("Unhandled error in module %s", self._current.name)
-            console.print(f"[red]✗ Module error:[/red] {exc}")
+            console.print(f"  [bold red]✗[/bold red]  [red]Module error:[/red]  {escape(str(exc))}")
 
     # ---- accessors ----
 
