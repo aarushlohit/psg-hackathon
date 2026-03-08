@@ -16,8 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from rich import box
+from rich.align import Align
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -52,12 +56,19 @@ class ClaraModule(BaseModule):
 
     def enter(self) -> None:
         super().enter()
+        console.print()
         console.print(Panel(
-            "[bold cyan]CLARA[/bold cyan] — Terminal Communication Platform\n"
-            "[dim]Chat · Rooms · DMs · Voice · Files · AI[/dim]\n"
-            "Type [bold]help[/bold] for commands.",
-            title="CLARA CLI", border_style="cyan",
+            Align.center(
+                "[bold bright_cyan]C L A R A[/bold bright_cyan]\n"
+                "[dim]Terminal Communication Platform[/dim]\n\n"
+                "[dim]Chat  ·  Rooms  ·  DMs  ·  Voice  ·  Files  ·  AI[/dim]"
+            ),
+            border_style="cyan",
+            padding=(1, 4),
+            subtitle="[dim]type [bold green]help[/bold green] for commands  ·  "
+                     "[bold green]connect <host> <user>[/bold green] to start[/dim]",
         ))
+        console.print()
 
     def exit(self) -> None:
         super().exit()
@@ -72,7 +83,7 @@ class ClaraModule(BaseModule):
             ("Server", [
                 ("server start", "Start CLARA server on this machine"),
                 ("server stop", "Stop the local CLARA server"),
-                ("server status", "Show server status"),
+                ("server status", "Check server health"),
             ]),
             ("Connection", [
                 ("connect <host> <user>", "Connect and register/login"),
@@ -88,47 +99,62 @@ class ClaraModule(BaseModule):
             ]),
             ("Messaging", [
                 ("send <message>", "Send message to room"),
-                ("msg <user> <message>", "Private message"),
-                ("edit <msg_id> <text>", "Edit a message"),
+                ("msg <user> <message>", "Send a private message"),
+                ("edit <msg_id> <text>", "Edit one of your messages"),
                 ("delete <msg_id>", "Delete a message"),
                 ("search <text>", "Search messages in room"),
             ]),
             ("Voice", [
-                ("call <user>", "Call a user"),
-                ("voice join [room]", "Join voice channel"),
-                ("voice leave", "Leave voice channel"),
+                ("call <user>", "Start a voice call"),
+                ("accept", "Accept an incoming call"),
+                ("reject", "Reject an incoming call"),
+                ("hangup", "End the current call"),
+                ("voice join [room]", "Join a voice channel"),
+                ("voice leave", "Leave the voice channel"),
                 ("mute", "Mute yourself"),
                 ("unmute", "Unmute yourself"),
-                ("hangup", "End current call"),
             ]),
-            ("File Transfer", [
-                ("file send <path>", "Upload a file"),
-                ("file receive <id>", "Download a file"),
-                ("file list", "List shared files"),
+            ("Files", [
+                ("file send <path>", "Upload a file to the room"),
+                ("file receive <id>", "Download a shared file"),
+                ("file list", "List files shared in room"),
             ]),
             ("AI", [
-                ("ai enable [provider]", "Enable AI (openai/claude/openrouter)"),
-                ("ai ask <question>", "Ask AI a question"),
-                ("ai summarize", "Summarize recent chat"),
-                ("ai usage", "Show AI usage stats"),
-                ("ai budget <$>", "Set spending limit"),
-                ("ai limit <n>", "Set token limit"),
+                ("ai enable [provider]", "Enable AI  (openai / claude / openrouter)"),
+                ("ai ask <question>", "Ask the AI assistant anything"),
+                ("ai summarize", "Summarise recent chat history"),
+                ("ai usage", "Show token usage and cost"),
+                ("ai budget <amount>", "Set a spending cap  e.g. ai budget 5"),
+                ("ai limit <n>", "Set max tokens per response"),
             ]),
             ("Moderation", [
-                ("kick <user>", "Kick user from room"),
-                ("ban <user>", "Ban user from server"),
-                ("mute <user>", "Mute a user"),
-                ("admin <user>", "Promote to admin"),
+                ("kick <user>", "Kick a user from the room"),
+                ("ban <user>", "Ban a user from the server"),
+                ("mute <user>", "Mute a user in the room"),
+                ("admin <user>", "Promote a user to admin"),
             ]),
         ]
-        for title, cmds in sections:
-            table = Table(title=title, show_header=True, header_style="bold cyan",
-                          title_style="bold white", expand=False)
-            table.add_column("Command", style="green", min_width=25)
-            table.add_column("Description")
-            for cmd, desc in cmds:
-                table.add_row(cmd, desc)
-            console.print(table)
+        console.print()
+        console.rule("[bold cyan]CLARA  —  Commands[/bold cyan]", style="cyan")
+        table = Table(
+            show_header=True,
+            header_style="bold dim",
+            border_style="bright_black",
+            box=box.SIMPLE,
+            padding=(0, 1),
+            expand=False,
+        )
+        table.add_column("Category",  style="dim cyan",   width=12, no_wrap=True)
+        table.add_column("Command",   style="bold green", width=28, no_wrap=True)
+        table.add_column("Description")
+        for i, (title, cmds) in enumerate(sections):
+            if i > 0:
+                table.add_row("", "", "")   # blank separator row
+            for j, (cmd, desc) in enumerate(cmds):
+                table.add_row(title if j == 0 else "", cmd, desc)
+        console.print(table)
+        console.rule(style="bright_black")
+        console.print()
 
     def handle(self, command: str) -> None:
         parts = command.strip().split(maxsplit=1)
@@ -646,116 +672,192 @@ class ClaraModule(BaseModule):
 
     # ──────────── incoming packet renderer ────────────
 
-    def _on_packet(self, pkt: Packet) -> None:
-        """Display incoming packets with Rich formatting."""
+    def _on_packet(self, pkt: Packet) -> None:  # noqa: C901
+        """Render incoming packets with Claude Code-style Rich formatting."""
         match pkt.action:
+
+            # ── chat messages ──────────────────────────────────────────────
             case Action.MESSAGE:
                 ts = _ts(pkt.timestamp)
-                console.print(f"  [dim]{ts}[/dim] [bold]{pkt.sender}[/bold]: {pkt.content}"
-                              + (f"  [dim](#{pkt.msg_id})[/dim]" if pkt.msg_id else ""))
+                room_tag = f"  [dim bright_black]#{pkt.room}[/dim bright_black]" if pkt.room else ""
+                id_tag   = f"  [dim]·{pkt.msg_id}[/dim]" if pkt.msg_id else ""
+                console.print(
+                    f" [dim]{ts}[/dim]  [bold cyan]{escape(pkt.sender)}[/bold cyan]  "
+                    f"{escape(pkt.content)}{id_tag}{room_tag}"
+                )
 
             case Action.DM:
-                ts = _ts(pkt.timestamp)
-                direction = "→" if pkt.sender == (self._client.username if self._client else "") else "←"
-                other = pkt.target if pkt.sender == (self._client.username if self._client else "") else pkt.sender
-                console.print(f"  [dim]{ts}[/dim] [magenta]DM {direction} {other}:[/magenta] {pkt.content}")
+                ts  = _ts(pkt.timestamp)
+                me  = self._client.username if self._client else ""
+                out = pkt.sender == me
+                other  = pkt.target if out else pkt.sender
+                arrow  = "[bold magenta]→[/bold magenta]" if out else "[bold magenta]←[/bold magenta]"
+                console.print(
+                    f" [dim]{ts}[/dim]  {arrow}  [bold magenta]{escape(other)}[/bold magenta]  "
+                    f"[dim magenta]dm[/dim magenta]  {escape(pkt.content)}"
+                )
 
+            # ── message mutations ──────────────────────────────────────────
             case Action.EDIT:
-                console.print(f"  [dim]✎ {pkt.sender} edited msg #{pkt.msg_id}:[/dim] {pkt.content}")
+                console.print(
+                    f" [dim]  ✎  {escape(pkt.sender)} edited "
+                    f"[bold]#{pkt.msg_id}[/bold]:[/dim]  {escape(pkt.content)}"
+                )
 
             case Action.DELETE:
-                console.print(f"  [dim]🗑 {pkt.sender} deleted msg #{pkt.msg_id}[/dim]")
+                console.print(
+                    f" [dim]  ✗  {escape(pkt.sender)} deleted msg #{pkt.msg_id}[/dim]"
+                )
 
+            # ── system / status ────────────────────────────────────────────
             case Action.SYSTEM:
-                console.print(f"  [dim cyan]» {pkt.content}[/dim cyan]")
+                console.rule(f"[dim]{escape(pkt.content)}[/dim]", style="bright_black")
 
             case Action.OK:
-                console.print(f"  [green]✓[/green] {pkt.content}")
+                console.print(f"  [bold green]✓[/bold green]  {escape(pkt.content)}")
 
             case Action.ERROR:
-                console.print(f"  [red]✗[/red] {pkt.content}")
+                console.print(f"  [bold red]✗[/bold red]  {escape(pkt.content)}")
 
             case Action.AUTH_OK:
-                console.print(f"  [green]✓ Authenticated:[/green] {pkt.content}")
+                console.print(f"  [bold green]✓[/bold green]  [dim]auth:[/dim]  {escape(pkt.content)}")
 
             case Action.AUTH_FAIL:
-                console.print(f"  [red]✗ Auth failed:[/red] {pkt.content}")
+                console.print(f"  [bold red]✗[/bold red]  [dim]auth:[/dim]  {escape(pkt.content)}")
 
+            # ── room / user lists ──────────────────────────────────────────
             case Action.ROOM_LIST:
                 rooms = pkt.data.get("rooms", [])
                 if not rooms:
-                    console.print("  [dim]No rooms found.[/dim]")
+                    console.print("  [dim]No rooms yet  —  create one with [bold]create-room <name>[/bold][/dim]")
                 else:
-                    table = Table(title="Rooms", show_header=True, header_style="bold cyan")
-                    table.add_column("Name", style="green")
-                    table.add_column("Created By")
-                    for r in rooms:
-                        table.add_row(f"#{r['name']}", r.get("created_by", ""))
+                    table = Table(
+                        show_header=True,
+                        header_style="bold dim",
+                        border_style="bright_black",
+                        box=box.SIMPLE,
+                        padding=(0, 1),
+                    )
+                    table.add_column("#",          style="dim",       width=4)
+                    table.add_column("Room",       style="bold cyan")
+                    table.add_column("Created by", style="dim")
+                    for i, r in enumerate(rooms, 1):
+                        table.add_row(str(i), r["name"], r.get("created_by", ""))
                     console.print(table)
 
             case Action.USER_LIST:
                 users = pkt.data.get("users", [])
-                room = pkt.room or "online"
-                console.print(f"  [cyan]Users in {room}:[/cyan] {', '.join(users) if users else '(none)'}")
+                room  = pkt.room or "server"
+                if not users:
+                    console.print(f"  [dim]No users in [bold]{room}[/bold][/dim]")
+                else:
+                    pills = "  ".join(f"[cyan]{escape(u)}[/cyan]" for u in users)
+                    console.print(f"  [dim]in [bold]{room}[/bold][/dim]  {pills}")
 
+            # ── search results ─────────────────────────────────────────────
             case Action.MSG_LIST:
-                msgs = pkt.data.get("messages", [])
+                msgs  = pkt.data.get("messages", [])
                 query = pkt.data.get("query", "")
                 if query:
-                    console.print(f"  [cyan]Search results for '{query}':[/cyan]")
+                    console.rule(
+                        f"[dim]search results for[/dim] [bold]{escape(query)!r}[/bold]",
+                        style="bright_black",
+                    )
+                if not msgs:
+                    console.print("  [dim]No messages found.[/dim]")
                 for m in msgs:
                     ts = _ts(m.get("timestamp", 0))
-                    console.print(f"  [dim]{ts}[/dim] [{m.get('id', '?')}] {m.get('sender', '?')}: {m.get('content', '')}")
+                    console.print(
+                        f" [dim]{ts}[/dim]  [dim]#{m.get('id','?')}[/dim]  "
+                        f"[bold]{escape(m.get('sender','?'))}[/bold]  "
+                        f"{escape(m.get('content',''))}"
+                    )
+                if query and msgs:
+                    console.rule(style="bright_black")
 
+            # ── voice / calls ──────────────────────────────────────────────
             case Action.CALL:
                 caller = pkt.sender
                 self._incoming_call_from = caller
-                console.print(
-                    f"\n  [bold yellow]📞 Incoming call from {caller}![/bold yellow]\n"
-                    f"  Type [bold]accept[/bold] or [bold]reject[/bold]"
-                )
-
-            case Action.CALL_ACCEPT:
-                console.print(f"  [green]📞 {pkt.sender} accepted your call.[/green]")
-
-            case Action.CALL_REJECT:
-                console.print(f"  [red]📞 {pkt.sender} rejected your call.[/red]")
-
-            case Action.CALL_END:
-                console.print(f"  [dim]📞 Call ended by {pkt.sender}.[/dim]")
-
-            case Action.AI_RESPONSE:
+                console.print()
                 console.print(Panel(
-                    pkt.content,
-                    title=f"AI ({pkt.data.get('provider', 'unknown')})",
-                    border_style="blue",
-                    subtitle=f"tokens: {pkt.data.get('tokens', '?')} | cost: {pkt.data.get('cost', '?')}",
+                    f"[bold yellow]  📞  Incoming call from "
+                    f"[bold white]{escape(caller)}[/bold white][/bold yellow]\n\n"
+                    "[dim]  Type [bold]accept[/bold] to answer  ·  "
+                    "[bold]reject[/bold] to decline[/dim]",
+                    border_style="yellow",
+                    padding=(0, 2),
                 ))
 
+            case Action.CALL_ACCEPT:
+                console.print(Panel(
+                    f"[bold green]  📞  Connected with "
+                    f"[bold white]{escape(pkt.sender)}[/bold white][/bold green]",
+                    border_style="green",
+                    padding=(0, 2),
+                ))
+
+            case Action.CALL_REJECT:
+                console.print(
+                    f"  [dim]📞  {escape(pkt.sender)} declined.[/dim]"
+                )
+
+            case Action.CALL_END:
+                console.print(
+                    f"  [dim]📞  Call ended by {escape(pkt.sender)}.[/dim]"
+                )
+
+            # ── AI ─────────────────────────────────────────────────────────
+            case Action.AI_RESPONSE:
+                provider = pkt.data.get("provider", "AI")
+                tokens   = pkt.data.get("tokens", "?")
+                cost     = pkt.data.get("cost", "?")
+                console.print(Panel(
+                    pkt.content,
+                    title=f"[bold cyan]{escape(provider)}[/bold cyan]",
+                    subtitle=f"[dim]{tokens} tokens  ·  ${cost}[/dim]",
+                    border_style="blue",
+                    padding=(1, 2),
+                ))
+
+            # ── files ──────────────────────────────────────────────────────
             case Action.FILE_DATA:
                 filename = pkt.data.get("filename", "file")
                 data_b64 = pkt.data.get("data", "")
-                size = pkt.data.get("size", 0)
+                size     = pkt.data.get("size", 0)
                 if data_b64:
                     dest = Path.cwd() / filename
                     dest.write_bytes(base64.b64decode(data_b64))
-                    console.print(f"  [green]✓[/green] Downloaded: {dest} ({size} bytes)")
+                    console.print(
+                        f"  [bold green]↓[/bold green]  [bold]{escape(filename)}[/bold]  "
+                        f"[dim]{size:,} bytes  →  {dest}[/dim]"
+                    )
 
             case Action.FILE_RECORD_LIST:
                 files = pkt.data.get("files", [])
                 if not files:
-                    console.print("  [dim]No files.[/dim]")
+                    console.print("  [dim]No files shared in this room.[/dim]")
                 else:
-                    table = Table(title="Files", show_header=True, header_style="bold cyan")
-                    table.add_column("ID", style="green")
-                    table.add_column("Name")
-                    table.add_column("Sender")
-                    table.add_column("Size")
+                    table = Table(
+                        show_header=True,
+                        header_style="bold dim",
+                        border_style="bright_black",
+                        box=box.SIMPLE,
+                        padding=(0, 1),
+                    )
+                    table.add_column("ID",          style="dim",  width=10, no_wrap=True)
+                    table.add_column("Filename",    style="bold")
+                    table.add_column("Size",        justify="right", style="dim")
+                    table.add_column("Uploaded by", style="dim")
                     for f in files:
-                        table.add_row(f.get("file_id", ""), f.get("filename", ""),
-                                      f.get("sender", ""), str(f.get("size", 0)))
+                        table.add_row(
+                            str(f.get("file_id", ""))[:8],
+                            f.get("filename", ""),
+                            f"{f.get('size', 0):,}",
+                            f.get("sender", ""),
+                        )
                     console.print(table)
 
             case _:
                 if pkt.content:
-                    console.print(f"  [dim]{pkt.action.value}: {pkt.content}[/dim]")
+                    console.print(f"  [dim]{escape(pkt.action.value)}  {escape(pkt.content)}[/dim]")
